@@ -1,12 +1,12 @@
 # Job Scout
 
-Сервис подбора вакансий с HeadHunter: фильтрация, fit-скоринг, сопроводительные письма.
+Сервис поиска вакансий на HeadHunter: сбор, fit-скоринг, персонализированные письма.
 
 ## Ветки
 
 | Ветка | Назначение |
 |-------|------------|
-| **dev** | Разработка. Сюда пушим все изменения. |
+| **dev** | Разработка. Вся работа и выгрузки сюда. |
 | **main** | Продакшен. Merge из `dev` по запросу ? автодеплой на сервер. |
 
 ```text
@@ -19,7 +19,7 @@ feature work ? dev ? (по запросу) merge to main ? GitHub Actions ? VPS
 python3 -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env      # заполнить DEEPSEEK_API_KEY
+cp .env.example .env      # заполните DEEPSEEK_API_KEY
 cp profile.example.json profile.json
 uvicorn app.main:app --host 0.0.0.0 --port 8090 --reload
 ```
@@ -36,7 +36,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8090 --reload
 | `DEPLOY_USER` | `root` |
 | `DEPLOY_SSH_KEY` | приватный ключ SSH (deploy) |
 
-На сервере сохраняются: `data/`, `.env`, `profile.json` — в git не входят.
+На сервере сохраняются: `data/`, `.env`, `profile.json` — в git не попадают.
 
 ## Структура
 
