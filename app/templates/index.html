@@ -6,29 +6,81 @@
   .stat-card { background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius-lg); padding: 16px 18px; }
   .stat-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   .stat-value { font-size: 20px; font-weight: 600; }
-  .banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; background: var(--success-bg); border: 1px solid rgba(31,138,101,0.18); border-radius: var(--radius-lg); padding: 12px 16px; margin-bottom: 16px; font-size: 13px; color: var(--success-ink); }
-  .banner-btn { background: rgba(31,138,101,0.12); border: 1px solid rgba(31,138,101,0.22); color: var(--success-ink); border-radius: var(--radius-sm); padding: 6px 12px; font-size: 12px; font-weight: 500; cursor: pointer; font-family: inherit; }
+  .collect-panel {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+    background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius-lg);
+    padding: 14px 16px; margin-bottom: 16px;
+  }
+  .collect-panel-text { font-size: 13px; color: var(--body); line-height: 1.5; max-width: 520px; }
+  .collect-panel-text strong { color: var(--ink); font-weight: 600; }
+  .collect-btn {
+    background: var(--ink); color: var(--bg); border: none; border-radius: var(--radius-sm);
+    padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer; font-family: inherit;
+    white-space: nowrap; min-width: 140px;
+  }
+  .collect-btn:disabled { opacity: 0.55; cursor: wait; }
+  .collect-result {
+    margin-bottom: 16px; padding: 12px 16px; border-radius: var(--radius-lg);
+    font-size: 13px; line-height: 1.55;
+  }
+  .collect-result.ok { background: var(--success-bg); color: var(--success-ink); border: 1px solid rgba(31,138,101,0.2); }
+  .collect-result.err { background: var(--danger-bg); color: var(--danger); border: 1px solid rgba(180,35,24,0.15); }
+  .collect-loader {
+    display: none; position: fixed; inset: 0; background: rgba(247,247,244,0.72);
+    z-index: 100; align-items: center; justify-content: center;
+  }
+  .collect-loader.active { display: flex; }
+  .collect-loader-box {
+    background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius-lg);
+    padding: 28px 32px; text-align: center; box-shadow: 0 8px 32px rgba(38,37,30,0.08);
+    min-width: 280px;
+  }
+  .spinner {
+    width: 32px; height: 32px; margin: 0 auto 16px;
+    border: 2px solid var(--hairline); border-top-color: var(--ink);
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .fit-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; height: 26px; padding: 0 6px; border-radius: var(--radius-sm); font-size: 11px; font-weight: 600; }
   .fit-yes { background: var(--success-bg); color: var(--success-ink); }
   .fit-partial { background: var(--warning-bg); color: var(--warning); }
   .company { font-weight: 500; color: var(--ink); }
   .vacancy-link { color: var(--ink); text-decoration: none; }
   .vacancy-link:hover { color: var(--accent); text-decoration: underline; }
-  .letter { white-space: pre-wrap; background: var(--surface-muted); border: 1px solid var(--hairline); border-radius: var(--radius-sm); padding: 12px; margin-top: 8px; font-size: 12px; max-width: 520px; }
-  .btn-applied { background: var(--surface-muted); border: 1px solid var(--hairline); border-radius: var(--radius-sm); padding: 5px 10px; font-size: 12px; cursor: pointer; font-family: inherit; }
-  tr.applied { opacity: 0.45; }
+  .letter-box { margin-top: 8px; max-width: 520px; }
+  .letter {
+    white-space: pre-wrap; background: var(--surface-muted); border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm); padding: 12px; font-size: 12px; line-height: 1.55;
+  }
+  .letter-actions { display: flex; gap: 8px; margin-top: 8px; }
+  .btn-copy, .btn-applied {
+    background: var(--surface-muted); border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+    padding: 5px 10px; font-size: 12px; cursor: pointer; font-family: inherit; color: var(--ink);
+  }
+  .btn-copy:hover, .btn-applied:hover { background: var(--hairline-soft); }
+  .btn-copy.copied { color: var(--success-ink); border-color: rgba(31,138,101,0.3); }
+  tr.row-applied td { background: #fafaf7; }
+  .applied-date { font-size: 12px; color: var(--muted); white-space: nowrap; }
   .empty { padding: 48px 24px; text-align: center; color: var(--muted); }
   .table-wrap { overflow-x: auto; }
   form { margin: 0; }
 </style>
 {% endblock %}
 {% block body %}
+<div id="collect-loader" class="collect-loader" aria-live="polite">
+  <div class="collect-loader-box">
+    <div class="spinner"></div>
+    <div style="font-weight:600;margin-bottom:6px">Собираем вакансии с HH</div>
+    <div style="font-size:13px;color:var(--muted)">Это может занять несколько минут</div>
+  </div>
+</div>
+
 <div class="app">
   <aside class="sidebar">
     <div class="brand"><div class="brand-mark">FL</div> FitLetter</div>
     <nav class="nav">
       <a href="/?filter=pending{% if resume_id %}&resume_id={{ resume_id }}{% endif %}" class="{{ 'active' if filter == 'pending' else '' }}">К отклику</a>
-      <a href="/?filter=all{% if resume_id %}&resume_id={{ resume_id }}{% endif %}" class="{{ 'active' if filter == 'all' else '' }}">Все</a>
+      <a href="/?filter=applied{% if resume_id %}&resume_id={{ resume_id }}{% endif %}" class="{{ 'active' if filter == 'applied' else '' }}">Отклики</a>
       <a href="/resumes">Резюме</a>
       {% if user.role == 'admin' %}<a href="/admin">Админ</a>{% endif %}
       <form method="post" action="/logout"><button type="submit" class="linkish">Выйти</button></form>
@@ -38,15 +90,15 @@
 
   <main class="main">
     <header class="page-header">
-      <h1>{% if filter == 'all' %}Все вакансии{% else %}К отклику{% endif %}</h1>
-      <p>Подбор под выбранное резюме · сбор идёт для всех резюме автоматически</p>
+      <h1>{% if filter == 'applied' %}Отклики{% else %}К отклику{% endif %}</h1>
+      <p>{% if filter == 'applied' %}История откликов с датой и текстом письма{% else %}Подбор под выбранное резюме · сбор для всех резюме ежедневно{% endif %}</p>
     </header>
 
     {% if not resumes %}
     <div class="alert alert-error">Сначала <a href="/resumes">загрузите резюме</a>, чтобы видеть вакансии.</div>
     {% else %}
 
-    <form class="filters" method="get" action="/">
+    <form class="filters" method="get" action="/" id="filters-form">
       <input type="hidden" name="filter" value="{{ filter }}" />
       <div class="field">
         <label>Резюме</label>
@@ -56,16 +108,18 @@
           {% endfor %}
         </select>
       </div>
+      {% if filter != 'applied' %}
       <div class="field">
         <label>Подходимость от</label>
         <select name="fit_min">
           <option value="" {% if not fit_min %}selected{% endif %}>Любая</option>
-          <option value="90" {% if fit_min == '90' %}selected{% endif %}>90% — отлично</option>
-          <option value="65" {% if fit_min == '65' %}selected{% endif %}>65% — частично+</option>
+          <option value="90" {% if fit_min == '90' %}selected{% endif %}>90%</option>
+          <option value="65" {% if fit_min == '65' %}selected{% endif %}>65%+</option>
         </select>
       </div>
+      {% endif %}
       <div class="field">
-        <label>Дата добавления</label>
+        <label>{% if filter == 'applied' %}Дата отклика{% else %}Дата добавления{% endif %}</label>
         <select name="date_filter">
           <option value="" {% if not date_filter %}selected{% endif %}>Все</option>
           <option value="today" {% if date_filter == 'today' %}selected{% endif %}>Сегодня</option>
@@ -78,71 +132,162 @@
         <select name="sort">
           <option value="date_desc" {% if sort == 'date_desc' %}selected{% endif %}>Дата ↓</option>
           <option value="date_asc" {% if sort == 'date_asc' %}selected{% endif %}>Дата ↑</option>
+          {% if filter != 'applied' %}
           <option value="fit_desc" {% if sort == 'fit_desc' %}selected{% endif %}>Fit ↓</option>
+          {% endif %}
         </select>
       </div>
       <button class="btn btn-secondary" type="submit">Применить</button>
     </form>
 
+    {% if filter != 'applied' %}
     <div class="stats">
       <div class="stat-card"><div class="stat-label">В базе</div><div class="stat-value">{{ stats.total }}</div></div>
       <div class="stat-card"><div class="stat-label">Откликнулся</div><div class="stat-value">{{ stats.applied }}</div></div>
       <div class="stat-card"><div class="stat-label">Новых сегодня</div><div class="stat-value">{{ stats.new_today }}</div></div>
     </div>
 
-    <div class="banner">
-      <span>Обновить вручную с HeadHunter для текущего резюме</span>
-      <form method="post" action="/collect"><button type="submit" class="banner-btn">Обновить с HH</button></form>
+    <div id="collect-result-box"></div>
+
+    <div class="collect-panel">
+      <div class="collect-panel-text">
+        Обновление с HeadHunter для <strong>текущего резюме</strong> — парсинг, скоринг и генерация писем.
+      </div>
+      <button type="button" class="collect-btn" id="collect-btn">Обновить с HH</button>
     </div>
+    {% endif %}
 
     <section class="card">
-      <div class="card-head">Вакансии · {{ vacancies|length }} шт.</div>
+      <div class="card-head">
+        {% if filter == 'applied' %}Отклики · {{ vacancies|length }}{% else %}Вакансии · {{ vacancies|length }}{% endif %}
+      </div>
       {% if vacancies %}
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Fit</th>
-              <th>Дата</th>
+              {% if filter != 'applied' %}<th>Fit</th>{% endif %}
+              <th>{% if filter == 'applied' %}Отклик{% else %}Добавлено{% endif %}</th>
               <th>Компания</th>
               <th>Вакансия</th>
               <th>ЗП</th>
               <th>Письмо</th>
-              <th></th>
+              {% if filter != 'applied' %}<th></th>{% endif %}
             </tr>
           </thead>
           <tbody>
             {% for v in vacancies %}
-            <tr class="{{ 'applied' if v.applied else '' }}">
+            <tr class="{{ 'row-applied' if filter == 'applied' else '' }}">
+              {% if filter != 'applied' %}
               <td>
-                <span class="fit-badge {{ 'fit-yes' if v.fit == 'yes' else 'fit-partial' }}" title="{{ v.fit }}">
-                  {{ v.fit_score }}%
-                </span>
+                <span class="fit-badge {{ 'fit-yes' if v.fit == 'yes' else 'fit-partial' }}">{{ v.fit_score }}%</span>
               </td>
-              <td style="white-space:nowrap;font-variant-numeric:tabular-nums">{{ fmt_date(v.first_seen) }}</td>
+              {% endif %}
+              <td class="applied-date">
+                {% if filter == 'applied' and v.applied_at %}{{ fmt_date(v.applied_at) }}{% else %}{{ fmt_date(v.first_seen) }}{% endif %}
+              </td>
               <td><span class="company">{{ v.company }}</span></td>
               <td><a class="vacancy-link" href="{{ v.url }}" target="_blank" rel="noopener">{{ v.title }}</a></td>
               <td style="color:var(--muted)">{{ v.salary }}</td>
               <td>
-                <details><summary style="cursor:pointer;font-size:12px;color:var(--muted)">Показать</summary>
-                  <div class="letter">{{ v.cover_letter }}</div>
+                <details{% if filter == 'applied' %} open{% endif %}>
+                  <summary style="cursor:pointer;font-size:12px;color:var(--muted)">{% if filter == 'applied' %}Текст отклика{% else %}Показать{% endif %}</summary>
+                  <div class="letter-box">
+                    <div class="letter" id="letter-{{ v.id }}">{{ v.cover_letter }}</div>
+                    <div class="letter-actions">
+                      <button type="button" class="btn-copy" data-target="letter-{{ v.id }}">Скопировать</button>
+                    </div>
+                  </div>
                 </details>
               </td>
+              {% if filter != 'applied' %}
               <td>
-                {% if not v.applied %}
-                <form method="post" action="/apply/{{ v.id }}"><button class="btn-applied" type="submit">Откликнулся</button></form>
-                {% else %}<span style="color:var(--success-ink)">✓</span>{% endif %}
+                <form method="post" action="/apply/{{ v.id }}">
+                  <input type="hidden" name="resume_id" value="{{ resume_id }}" />
+                  <button class="btn-applied" type="submit">Откликнулся</button>
+                </form>
               </td>
+              {% endif %}
             </tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
       {% else %}
-      <p class="empty">Нет вакансий по выбранным фильтрам. Сбор идёт ежедневно — или нажмите «Обновить с HH».</p>
+      <p class="empty">
+        {% if filter == 'applied' %}Пока нет откликов по этому резюме.{% else %}Нет вакансий по фильтрам — нажмите «Обновить с HH» или дождитесь ежедневного сбора.{% endif %}
+      </p>
       {% endif %}
     </section>
     {% endif %}
   </main>
 </div>
+
+<script>
+(function () {
+  document.querySelectorAll('.btn-copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var el = document.getElementById(btn.dataset.target);
+      if (!el) return;
+      var text = el.innerText;
+      navigator.clipboard.writeText(text).then(function () {
+        btn.textContent = 'Скопировано';
+        btn.classList.add('copied');
+        setTimeout(function () {
+          btn.textContent = 'Скопировать';
+          btn.classList.remove('copied');
+        }, 2000);
+      });
+    });
+  });
+
+  var collectBtn = document.getElementById('collect-btn');
+  if (!collectBtn) return;
+
+  var loader = document.getElementById('collect-loader');
+  var resultBox = document.getElementById('collect-result-box');
+
+  function showResult(data, isError) {
+    var cls = isError ? 'collect-result err' : 'collect-result ok';
+    var html = '';
+    if (isError) {
+      html = '<strong>Ошибка:</strong> ' + (data.error || 'не удалось собрать');
+    } else {
+      html = '<strong>Готово за ' + (data.elapsed_sec || '?') + ' сек</strong><br>' +
+        'Просмотрено на HH: ' + (data.scanned ?? 0) + ' · уникальных: ' + (data.unique ?? 0) + '<br>' +
+        'Новых в базу: <strong>' + (data.new ?? 0) + '</strong>' +
+        (data.skipped_english ? ' · пропущено (англ.): ' + data.skipped_english : '');
+    }
+    resultBox.innerHTML = '<div class="' + cls + '">' + html + '</div>';
+  }
+
+  collectBtn.addEventListener('click', function () {
+    collectBtn.disabled = true;
+    loader.classList.add('active');
+    resultBox.innerHTML = '';
+
+    fetch('/api/collect', { method: 'POST', credentials: 'same-origin' })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        loader.classList.remove('active');
+        collectBtn.disabled = false;
+        if (!res.ok || !res.data.ok) {
+          showResult(res.data || {}, true);
+          return;
+        }
+        showResult(res.data, false);
+        setTimeout(function () { window.location.reload(); }, 2200);
+      })
+      .catch(function (e) {
+        loader.classList.remove('active');
+        collectBtn.disabled = false;
+        showResult({ error: e.message || 'сеть' }, true);
+      });
+  });
+
+  {% if collect_result %}
+  showResult({ new: {{ collect_result.new }}, elapsed_sec: null, scanned: '—', unique: '—' }, false);
+  {% endif %}
+})();
+</script>
 {% endblock %}

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -240,7 +241,13 @@ async def resume_upload(
         return RedirectResponse("/resumes?msg=big", status_code=303)
     uid = user["id"]
     resume_name = name.strip() or Path(file.filename or "Резюме").stem
-    rid = create_resume(user_id=uid, name=resume_name, text_content="")
+    rid = create_resume(
+        user_id=uid,
+        name=resume_name,
+        text_content="",
+        display_name=user.get("display_name") or "",
+        email=user.get("email") or "",
+    )
     dest_dir = RESUMES_DIR / str(uid)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{rid}{suffix}"
@@ -250,7 +257,14 @@ async def resume_upload(
     except Exception:
         delete_resume(rid, uid)
         return RedirectResponse("/resumes?msg=parse", status_code=303)
-    update_resume_file(rid, uid, file_path=str(dest), text_content=text)
+    update_resume_file(
+        rid,
+        uid,
+        file_path=str(dest),
+        text_content=text,
+        display_name=user.get("display_name") or "",
+        email=user.get("email") or "",
+    )
     request.session["resume_id"] = rid
     return RedirectResponse("/resumes?msg=ok", status_code=303)
 
@@ -282,13 +296,18 @@ async def index(
     rid = _selected_resume_id(request, user["id"], resume_id)
     vacancies: list = []
     st = {"total": 0, "applied": 0, "new_today": 0}
+    collect_result = None
+    if request.query_params.get("collected") is not None:
+        collect_result = {"new": int(request.query_params.get("collected") or 0)}
+
     if rid is not None:
         fit_val = int(fit_min) if fit_min.isdigit() else None
-        hide_applied = filter != "all"
+        only_applied = filter == "applied"
         vacancies = list_vacancies(
             user["id"],
             rid,
-            hide_applied=hide_applied,
+            hide_applied=not only_applied,
+            only_applied=only_applied,
             fit_min=fit_val,
             date_filter=date_filter or None,
             sort=sort,
@@ -307,30 +326,51 @@ async def index(
             "fit_min": fit_min,
             "date_filter": date_filter,
             "sort": sort,
+            "collect_result": collect_result,
         },
     )
 
 
+def _resume_query(request: Request, resume_id: int | None) -> str:
+    rid = resume_id or request.session.get("resume_id")
+    return f"&resume_id={rid}" if rid else ""
+
+
 @app.post("/apply/{vacancy_id}")
-async def apply(request: Request, vacancy_id: int):
+async def apply(
+    request: Request,
+    vacancy_id: int,
+    resume_id: int | None = Form(None),
+):
     user = require_login(request)
     if redir := _redirect_if_needed(user):
         return redir
     mark_applied(vacancy_id, user["id"])
-    return RedirectResponse("/", status_code=303)
+    q = _resume_query(request, resume_id)
+    return RedirectResponse(f"/?filter=pending{q}", status_code=303)
 
 
-@app.post("/collect")
-async def run_collect(request: Request):
+@app.post("/api/collect")
+async def api_collect(request: Request):
     user = require_login(request)
     if redir := _redirect_if_needed(user):
-        return redir
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
     rid = request.session.get("resume_id")
     if not rid:
-        return RedirectResponse("/resumes?msg=noresume", status_code=303)
-    result = await collect(user["id"], int(rid))
-    new = result.get("new", 0) if isinstance(result, dict) else 0
-    return RedirectResponse(f"/?collected={new}", status_code=303)
+        return JSONResponse({"ok": False, "error": "Сначала выберите или загрузите резюме"}, status_code=400)
+    t0 = time.perf_counter()
+    try:
+        result = await collect(user["id"], int(rid))
+    except Exception as e:
+        return JSONResponse(
+            {"ok": False, "error": str(e), "elapsed_sec": round(time.perf_counter() - t0, 1)},
+            status_code=500,
+        )
+    if not isinstance(result, dict):
+        result = {"ok": True, "new": 0, "scanned": 0, "unique": 0}
+    result["elapsed_sec"] = round(time.perf_counter() - t0, 1)
+    result.setdefault("ok", True)
+    return JSONResponse(result)
 
 
 @app.get("/health")

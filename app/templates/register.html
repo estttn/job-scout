@@ -1,56 +1,40 @@
-{% extends "base.html" %}
+{% extends "auth_shell.html" %}
 {% block title %}Регистрация — FitLetter{% endblock %}
-{% block extra_css %}
-<style>
-  .auth-split { min-height: 100vh; display: grid; grid-template-columns: 1fr 1fr; }
-  .auth-visual {
-    background: var(--bg);
-    display: flex; align-items: center; justify-content: center;
-    padding: 48px 40px;
-    border-right: 1px solid var(--hairline);
-  }
-  .auth-visual img {
-    width: 100%; max-width: 520px; height: auto;
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-card);
-  }
-  .auth-panel {
-    display: flex; align-items: center; justify-content: center;
-    padding: 48px 40px; background: var(--surface);
-  }
-  .auth-panel .auth-card {
-    width: 100%; max-width: 380px;
-    background: transparent; border: none; box-shadow: none; padding: 0;
-  }
-  @media (max-width: 900px) {
-    .auth-split { grid-template-columns: 1fr; }
-    .auth-visual { display: none; }
-    .auth-panel { background: var(--bg); min-height: 100vh; }
-  }
-</style>
-{% endblock %}
-{% block body %}
-<div class="auth-split">
-  <aside class="auth-visual" aria-hidden="true">
-    <img src="/static/img/fitletter-login-hero.png" alt="" width="1040" height="585" />
-  </aside>
-  <div class="auth-panel">
-    <div class="auth-card">
-      <div class="brand" style="padding:0 0 24px"><div class="brand-mark">FL</div> Регистрация</div>
-      {% if error == 'username' %}<div class="alert alert-error">Логин: 3–32 символа, латиница, цифры, _</div>{% endif %}
-      {% if error == 'password' %}<div class="alert alert-error">Пароль минимум 6 символов</div>{% endif %}
-      {% if error == 'mismatch' %}<div class="alert alert-error">Пароли не совпадают</div>{% endif %}
-      {% if error == 'taken' %}<div class="alert alert-error">Такой логин уже занят</div>{% endif %}
-      <form method="post" action="/register">
-        <div class="field"><label>Логин</label><input name="username" required pattern="[a-zA-Z0-9_]{3,32}" /></div>
-        <div class="field"><label>Имя</label><input name="display_name" placeholder="Как к вам обращаться" /></div>
-        <div class="field"><label>Email</label><input name="email" type="email" /></div>
-        <div class="field"><label>Пароль</label><input name="password" type="password" required minlength="6" /></div>
-        <div class="field"><label>Повтор пароля</label><input name="password2" type="password" required /></div>
-        <button class="btn" type="submit" style="width:100%;margin-top:4px">Отправить заявку</button>
-      </form>
-      <p style="margin-top:20px;font-size:13px;color:var(--muted)"><a href="/login" style="color:var(--ink);font-weight:500">Уже есть аккаунт</a></p>
-    </div>
+{% block auth_content %}
+<div class="brand"><div class="brand-mark">FL</div> FitLetter</div>
+<h2>Регистрация</h2>
+<p class="auth-lead">Заявка уходит администратору — после одобрения можно войти.</p>
+
+{% if error == 'username' %}<div class="alert alert-error">Логин: 3–32 символа, латиница, цифры, _</div>{% endif %}
+{% if error == 'password' %}<div class="alert alert-error">Пароль минимум 6 символов</div>{% endif %}
+{% if error == 'mismatch' %}<div class="alert alert-error">Пароли не совпадают</div>{% endif %}
+{% if error == 'taken' %}<div class="alert alert-error">Такой логин уже занят</div>{% endif %}
+
+<form method="post" action="/register">
+  <div class="auth-field">
+    <label for="username">Логин</label>
+    <input id="username" name="username" required pattern="[a-zA-Z0-9_]{3,32}" placeholder="latin_name" />
   </div>
+  <div class="auth-field">
+    <label for="display_name">Имя</label>
+    <input id="display_name" name="display_name" placeholder="Как к вам обращаться" />
+  </div>
+  <div class="auth-field">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" placeholder="you@email.com" />
+  </div>
+  <div class="auth-field">
+    <label for="password">Пароль</label>
+    <input id="password" name="password" type="password" required minlength="6" placeholder="Минимум 6 символов" />
+  </div>
+  <div class="auth-field">
+    <label for="password2">Повтор пароля</label>
+    <input id="password2" name="password2" type="password" required placeholder="Ещё раз" />
+  </div>
+  <button class="auth-submit" type="submit">Отправить заявку</button>
+</form>
+
+<div class="auth-footer">
+  Уже есть аккаунт? <a href="/login">Войти</a>
 </div>
 {% endblock %}

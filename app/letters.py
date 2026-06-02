@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Cover letters via DeepSeek PRO - tailored to company and vacancy."""
+"""Cover letters via DeepSeek — per-resume candidate data only."""
 from __future__ import annotations
 
 import json
@@ -10,36 +10,15 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from app.candidate import letter_footer, merge_profile_for_letters
 
-CANDIDATE = """
-Владислав. UX/UI -> PM -> руководитель направления delivery (Smart Space Lab).
-10+ лет digital, enterprise B2B: ERP, автоматизация, presale, внедрения, PMO.
-Руковожу delivery: 3-4 PM, команды до 10-12 человек, presale -> сдача -> сопровождение.
-Стартовал как UX/UI - стык дизайна, продукта и разработки.
-Удалёнка, Ярославль. ЗП: от 180k на руки, комфортно 250k.
-Английский язык не использую в работе - не упоминать.
-""".strip()
+ROOT = Path(__file__).resolve().parent.parent
 
 BAD_PATTERNS = (
     "По описанию вижу пересечение с моим опытом",
     "UX/UI -> PM -> delivery: discovery, бэклог",
     "Задачи внедрения и интеграций близки: presale -> требования",
     "Вёл масштабные enterprise-проекты: проработка процессов",
-    "английским владею",
-    "владею английским",
-    "английский свободно",
-    "уровень англиского",
-    "английский язык",
-    "Upper-Intermediate",
-    "upper-intermediate",
-    "Pre-Intermediate",
-    "Intermediate English",
-    "Fluent English",
-    "English - Upper",
-    "English language",
-    "bilingual",
-    "английский на уровне",
 )
 
 _ENGLISH_SKILL_RE = re.compile(
@@ -67,29 +46,37 @@ def _load_project_env() -> None:
 _load_project_env()
 
 
+def _resolved_profile(profile: dict | None) -> dict:
+    return merge_profile_for_letters(profile or {})
+
+
 def is_bad_letter(text: str) -> bool:
     lower = (text or "").lower()
     if any(p.lower() in lower for p in BAD_PATTERNS):
         return True
     if _ENGLISH_SKILL_RE.search(lower):
         return True
-    if re.search(r"англиск\w*", lower) and re.search(
-        r"(владе|свобод|upper|fluent|b2|c1|intermediate|bilingual)", lower
-    ):
-        return True
     return False
 
-def is_complete_letter(text: str) -> bool:
-    """Reject letters cut off by token limit or missing the standard footer."""
+
+def is_complete_letter(text: str, profile: dict | None = None) -> bool:
+    p = _resolved_profile(profile)
     t = (text or "").strip()
-    if len(t) < 400:
+    if len(t) < 280:
         return False
     if is_bad_letter(t):
         return False
-    if "Владислав" not in t:
+    name = (p.get("candidate_name") or "").strip()
+    if name and name not in t:
         return False
-    lower = t.lower()
-    if "180" not in t and "на руки" not in lower:
+    contacts = p.get("contacts") or {}
+    has_contact = bool(
+        p.get("contacts_block")
+        or contacts.get("phone")
+        or contacts.get("email")
+        or contacts.get("telegram")
+    )
+    if not has_contact:
         return False
     return True
 
@@ -114,20 +101,47 @@ def _clean_description(description: str, company: str) -> str:
     return text[:2800].strip()
 
 
-def _finalize_letter(content: str) -> str:
-    """Trim cut-off tails and ensure standard HH footer."""
+def _strip_foreign_footer(text: str, profile: dict) -> str:
+    """Remove lines that look like another person's signature/footer."""
+    p = _resolved_profile(profile)
+    name = (p.get("candidate_name") or "").strip()
+    lines = text.splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if len(lines) >= 2:
+        tail = "\n".join(lines[-4:]).lower()
+        if name and name.lower() not in tail:
+            if re.search(r"владислав|180\s*k|ярославл", tail):
+                lines = lines[:-4]
+    return "\n".join(lines).strip()
+
+
+def _finalize_letter(content: str, profile: dict | None) -> str:
+    p = _resolved_profile(profile)
     t = content.strip()
     t = re.sub(r"^```(?:markdown|text)?\s*", "", t)
     t = re.sub(r"\s*```$", "", t).strip()
-    sig = "Владислав"
-    footer = "\n\nУдалёнка, Ярославль. ЗП: от 180k на руки.\n\nВладислав"
-    if sig in t[-140:] and "180" in t[-220:]:
+    t = _strip_foreign_footer(t, p)
+
+    footer = letter_footer(p)
+    if not footer:
         return t
-    if t and t[-1].isalpha():
+
+    name = (p.get("candidate_name") or "").strip()
+    if name and name in t[-120:] and (p.get("contacts_block") or "") in t:
+        return t
+
+    t = re.sub(
+        r"\n*(Удалёнка|Ярославль|ЗП:|от \d+.*на руки|Владислав).*$",
+        "",
+        t,
+        flags=re.IGNORECASE | re.DOTALL,
+    ).strip()
+    if t and t[-1].isalpha() and len(t) > 400:
         t = re.sub(r"[^.!?\n]*$", "", t).strip()
-    if not t.endswith(sig):
-        t = t.rstrip(".,;:- ") + footer
-    return t
+
+    return f"{t}\n\n{footer}".strip()
+
 
 def generate_cover_letter(
     *,
@@ -137,12 +151,24 @@ def generate_cover_letter(
     description: str,
     profile: dict | None = None,
 ) -> str:
+    p = _resolved_profile(profile)
+    if not (p.get("resume_summary") or "").strip():
+        raise RuntimeError(
+            "В резюме нет текста — загрузите файл резюме, чтобы письма были персональными"
+        )
+    if not (p.get("candidate_name") or "").strip():
+        raise RuntimeError("Не удалось определить имя из резюме — проверьте файл")
+    if not (p.get("contacts_block") or "").strip():
+        raise RuntimeError(
+            "В резюме не найдены контакты (телефон или email) — добавьте их в файл"
+        )
+
     desc = _clean_description(description, company)
     last_err: Exception | None = None
     for attempt in range(3):
         try:
-            letter = _deepseek_letter(title, company, salary, desc, profile)
-            if letter and is_complete_letter(letter):
+            letter = _deepseek_letter(title, company, salary, desc, p)
+            if letter and is_complete_letter(letter, p):
                 return letter
             print(
                 f"Incomplete letter attempt {attempt + 1} [{title[:40]}]: len={len(letter or '')}",
@@ -150,11 +176,11 @@ def generate_cover_letter(
             )
         except Exception as e:
             last_err = e
-            print(f"DeepSeek PRO attempt {attempt + 1} [{title[:40]}]: {e}")
+            print(f"DeepSeek attempt {attempt + 1} [{title[:40]}]: {e}")
             time.sleep(2 * (attempt + 1))
     if last_err:
-        print(f"DeepSeek PRO failed after retries [{title[:40]}]: {last_err}")
-    raise RuntimeError(f"DeepSeek PRO не смог сгенерировать письмо для «{title}»")
+        print(f"DeepSeek failed [{title[:40]}]: {last_err}")
+    raise RuntimeError(f"Не удалось сгенерировать письмо для «{title}»")
 
 
 def _api_key() -> str:
@@ -174,39 +200,53 @@ def _deepseek_letter(
     company: str,
     salary: str,
     description: str,
-    profile: dict | None,
+    profile: dict,
 ) -> str:
     company_clean = company if company and company != "—" else "компания"
-    resume = (profile or {}).get("resume_summary") or CANDIDATE
+    resume = profile.get("resume_summary") or ""
     sal_note = salary if salary and salary not in ("—", "?") else "не указана"
+    name = profile.get("candidate_name") or "кандидат"
+    location = profile.get("location") or "не указан"
+    salary_expect = profile.get("salary_note") or "не указана"
+    footer = letter_footer(profile)
 
     prompt = f"""Напиши сопроводительное письмо на русском для отклика на HeadHunter.
 
 Компания-работодатель: {company_clean}
 Вакансия: «{title}»
-Зарплата: {sal_note}
+Зарплата в вакансии: {sal_note}
 
-Текст вакансии (суть и требования):
+Текст вакансии:
 {description or "опирайся на название вакансии"}
 
-Профиль кандидата (только для твоей ориентации, не копируй):
-{resume}
+Профиль кандидата (используй ТОЛЬКО эти данные о кандидате, не выдумывай других людей):
+Имя: {name}
+Город/формат: {location}
+Ожидания по ЗП: {salary_expect}
+Резюме:
+{resume[:6000]}
 
 Требования:
-- Обращение к компании {company_clean} по имени, не обобщай HR-шаблоном
-- Покажи пользу для вакансии «{title}» - минимум 2-3 конкретных задачи/результата из вакансии и связь с опытом кандидата
-- Не шаблон и не список общих фраз, конкретика важнее общих слов
-- Не повторяй дословно шаблонные фразы типа «По описанию вижу пересечение» или маркетинговые buzzwords без смысла
-- НЕ упоминай английский язык, уровень владения и языковые навыки - у кандидата нет навыков английского, язык в работе не используется
-- Не выдумывай английский и не подстраивай письмо под языковые требования - в сопроводительном их нет
-- Если в вакансии требуется английский - не пиши, что владеешь; лучше не упоминать язык вообще
-- 5-7 предложений, живой деловой тон
+- Обращение к компании {company_clean}
+- 2-3 конкретные связи опыта кандидата с задачами вакансии «{title}»
+- Не шаблонные фразы вроде «По описанию вижу пересечение»
+- НЕ упоминать английский язык и языковые навыки
+- Используй только имя {name}, город {location}, зарплату {salary_expect} — не подставляй другие имена, города или суммы
+- 5-7 предложений, деловой тон
 - Начни: «Добрый день!»
-- Закончи: удобная связь, Ярославль, ЗП от 180k на руки. Подпись: Владислав
+- Основной текст БЕЗ контактов и подписи в конце
+- После текста письма ОБЯЗАТЕЛЬНО добавь ровно этот блок контактов (скопируй дословно):
+
+{footer}
+
 - Только текст письма, без markdown"""
 
     base = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
-    max_tokens = int(os.environ.get("DEEPSEEK_MAX_TOKENS_PRO") or os.environ.get("DEEPSEEK_MAX_TOKENS") or "1200")
+    max_tokens = int(
+        os.environ.get("DEEPSEEK_MAX_TOKENS_PRO")
+        or os.environ.get("DEEPSEEK_MAX_TOKENS")
+        or "1200"
+    )
 
     payload = {
         "model": _model(),
@@ -235,4 +275,4 @@ def _deepseek_letter(
         raise RuntimeError("truncated: max_tokens")
 
     content = choice["message"]["content"].strip()
-    return _finalize_letter(content)
+    return _finalize_letter(content, profile)

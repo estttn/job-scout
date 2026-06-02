@@ -7,7 +7,16 @@ import urllib.parse
 import urllib.request
 from urllib.error import HTTPError, URLError
 
-from app.db import FIT_SCORE, init_db, list_active_users_with_resumes, load_resume_profile, upsert_vacancy
+from app.candidate import merge_profile_for_letters
+from app.db import (
+    FIT_SCORE,
+    get_resume,
+    get_user_by_id,
+    init_db,
+    list_active_users_with_resumes,
+    load_resume_profile,
+    upsert_vacancy,
+)
 from app.letters import generate_cover_letter
 from app.scraper import parse_search_html, parse_vacancy_description
 from app.scorer import score_vacancy
@@ -54,7 +63,19 @@ def fetch_vacancy_description(url: str) -> str:
         return ""
 
 
+def _profile_for_collect(user_id: int, resume_id: int, profile: dict) -> dict:
+    user = get_user_by_id(user_id) or {}
+    resume = get_resume(resume_id, user_id) or {}
+    return merge_profile_for_letters(
+        profile,
+        display_name=user.get("display_name") or "",
+        email=user.get("email") or "",
+        resume_text=resume.get("text_content") or "",
+    )
+
+
 def collect_for_resume(user_id: int, resume_id: int, profile: dict) -> dict:
+    profile = _profile_for_collect(user_id, resume_id, profile)
     seen_ids: set[str] = set()
     new_count = 0
     skipped_english = 0
@@ -161,13 +182,13 @@ def collect_all_sync() -> list[dict]:
 
 def collect_sync_for_user(user_id: int, resume_id: int) -> dict:
     init_db()
-    from app.db import get_resume
-
     resume = get_resume(resume_id, user_id)
     if not resume:
-        return {"error": "resume not found", "new": 0}
+        return {"ok": False, "error": "resume not found", "new": 0, "scanned": 0, "unique": 0}
     profile = load_resume_profile(resume)
-    return collect_for_resume(user_id, resume_id, profile)
+    result = collect_for_resume(user_id, resume_id, profile)
+    result["ok"] = True
+    return result
 
 
 async def collect(user_id: int | None = None, resume_id: int | None = None) -> dict | list[dict]:

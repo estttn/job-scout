@@ -1,54 +1,28 @@
-{% extends "base.html" %}
+{% extends "auth_shell.html" %}
 {% block title %}Вход — FitLetter{% endblock %}
-{% block extra_css %}
-<style>
-  .auth-split { min-height: 100vh; display: grid; grid-template-columns: 1fr 1fr; }
-  .auth-visual {
-    background: var(--bg);
-    display: flex; align-items: center; justify-content: center;
-    padding: 48px 40px;
-    border-right: 1px solid var(--hairline);
-  }
-  .auth-visual img {
-    width: 100%; max-width: 520px; height: auto;
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-card);
-  }
-  .auth-panel {
-    display: flex; align-items: center; justify-content: center;
-    padding: 48px 40px; background: var(--surface);
-  }
-  .auth-panel .auth-card {
-    width: 100%; max-width: 380px;
-    background: transparent; border: none; box-shadow: none; padding: 0;
-  }
-  @media (max-width: 900px) {
-    .auth-split { grid-template-columns: 1fr; }
-    .auth-visual { display: none; }
-    .auth-panel { background: var(--bg); min-height: 100vh; }
-  }
-</style>
-{% endblock %}
-{% block body %}
-<div class="auth-split">
-  <aside class="auth-visual" aria-hidden="true">
-    <img src="/static/img/fitletter-login-hero.png" alt="" width="1040" height="585" />
-  </aside>
-  <div class="auth-panel">
-    <div class="auth-card">
-      <div class="brand" style="padding:0 0 24px"><div class="brand-mark">FL</div> FitLetter</div>
-      <p style="margin:0 0 20px;font-size:13px;color:var(--muted);line-height:1.5">Подбор вакансий и персональные сопроводительные под ваше резюме.</p>
-      {% if error == 'invalid' %}<div class="alert alert-error">Неверный логин или пароль</div>{% endif %}
-      {% if error == 'pending' %}<div class="alert alert-error">Аккаунт ожидает подтверждения администратором</div>{% endif %}
-      {% if error == 'blocked' %}<div class="alert alert-error">Аккаунт заблокирован</div>{% endif %}
-      {% if request.query_params.get('registered') %}<div class="alert alert-ok">Заявка отправлена. Дождитесь одобрения администратора.</div>{% endif %}
-      <form method="post" action="/login">
-        <div class="field"><label>Логин</label><input name="username" required autocomplete="username" /></div>
-        <div class="field"><label>Пароль</label><input name="password" type="password" required autocomplete="current-password" /></div>
-        <button class="btn" type="submit" style="width:100%;margin-top:4px">Войти</button>
-      </form>
-      <p style="margin-top:20px;font-size:13px;color:var(--muted)">Нет аккаунта? <a href="/register" style="color:var(--ink);font-weight:500">Регистрация</a></p>
-    </div>
+{% block auth_content %}
+<div class="brand"><div class="brand-mark">FL</div> FitLetter</div>
+<h2>Вход</h2>
+<p class="auth-lead">Подбор вакансий и персональные сопроводительные под ваше резюме.</p>
+
+{% if error == 'invalid' %}<div class="alert alert-error">Неверный логин или пароль</div>{% endif %}
+{% if error == 'pending' %}<div class="alert alert-error">Аккаунт ожидает подтверждения администратором</div>{% endif %}
+{% if error == 'blocked' %}<div class="alert alert-error">Аккаунт заблокирован</div>{% endif %}
+{% if request.query_params.get('registered') %}<div class="alert alert-ok">Заявка отправлена. Дождитесь одобрения.</div>{% endif %}
+
+<form method="post" action="/login">
+  <div class="auth-field">
+    <label for="username">Логин</label>
+    <input id="username" name="username" required autocomplete="username" placeholder="Ваш логин" />
   </div>
+  <div class="auth-field">
+    <label for="password">Пароль</label>
+    <input id="password" name="password" type="password" required autocomplete="current-password" placeholder="••••••••" />
+  </div>
+  <button class="auth-submit" type="submit">Войти</button>
+</form>
+
+<div class="auth-footer">
+  Нет аккаунта? <a href="/register">Зарегистрироваться</a>
 </div>
 {% endblock %}

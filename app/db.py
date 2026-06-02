@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.auth import ADMIN_PASSWORD, ADMIN_USERNAME, hash_password
+from app.candidate import profile_from_resume_text, profile_to_json
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "hhscout.db"
 RESUMES_DIR = Path(__file__).resolve().parent.parent / "data" / "resumes"
@@ -67,9 +68,20 @@ def init_db() -> None:
             """
         )
         _ensure_vacancies_schema(conn)
+        _migrate_vacancy_columns(conn)
         _seed_admin(conn)
         _migrate_legacy_vacancies(conn)
         conn.commit()
+
+
+def _migrate_vacancy_columns(conn: sqlite3.Connection) -> None:
+    if not conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='vacancies'"
+    ).fetchone():
+        return
+    cols = _table_columns(conn, "vacancies")
+    if "applied_at" not in cols:
+        conn.execute("ALTER TABLE vacancies ADD COLUMN applied_at TEXT")
 
 
 def _create_vacancies_table(conn: sqlite3.Connection) -> None:
@@ -197,43 +209,55 @@ def _seed_admin(conn: sqlite3.Connection) -> None:
             user_id=admin_id,
             name="Основное резюме",
             text_content="",
-            profile_json=_default_profile_json(""),
+            profile_json=admin_seed_profile_json(""),
         )
 
 
-def default_profile_json(resume_summary: str) -> str:
-    base = {
-        "area": 113,
-        "search_period": 7,
-        "pages_per_query": 2,
-        "request_delay_sec": 0.8,
-        "letter_delay_sec": 0.5,
-        "experience": "doesNotMatter",
-        "salary_min_net": 180000,
-        "salary_comfort_net": 250000,
-        "remote": True,
-        "search_queries": [
-            "руководитель проектов",
-            "delivery manager",
-            "project manager внедрение",
-        ],
-        "exclude_title_keywords": [],
-        "exclude_english_keywords": [],
-        "include_title_keywords": [
-            "project",
-            "проджект",
-            "проект",
-            "delivery",
-            "pm",
-            "руководитель",
-        ],
-        "resume_summary": resume_summary[:8000] if resume_summary else "",
-    }
-    return json.dumps(base, ensure_ascii=False)
+def default_profile_json(
+    resume_summary: str,
+    *,
+    display_name: str = "",
+    email: str = "",
+) -> str:
+    profile = profile_from_resume_text(
+        resume_summary,
+        display_name=display_name,
+        email=email,
+    )
+    return profile_to_json(profile)
 
 
 def _default_profile_json(resume_summary: str) -> str:
     return default_profile_json(resume_summary)
+
+
+def admin_seed_profile_json(resume_summary: str = "") -> str:
+    """Admin-only defaults when bootstrapping from legacy profile.json."""
+    profile = profile_from_resume_text(
+        resume_summary,
+        display_name=ADMIN_USERNAME,
+    )
+    legacy_path = Path(__file__).resolve().parent.parent / "profile.json"
+    if legacy_path.exists():
+        with open(legacy_path, encoding="utf-8") as f:
+            legacy = json.load(f)
+        for key in (
+            "search_queries",
+            "salary_min_net",
+            "salary_comfort_net",
+            "area",
+            "remote",
+        ):
+            if key in legacy:
+                profile[key] = legacy[key]
+        if legacy.get("resume_summary") and not resume_summary:
+            profile["resume_summary"] = legacy["resume_summary"][:8000]
+            meta = profile_from_resume_text(
+                profile["resume_summary"],
+                display_name=ADMIN_USERNAME,
+            )
+            profile.update({k: v for k, v in meta.items() if v})
+    return profile_to_json(profile)
 
 
 def update_resume_file(
@@ -242,8 +266,14 @@ def update_resume_file(
     *,
     file_path: str,
     text_content: str,
+    display_name: str = "",
+    email: str = "",
 ) -> None:
-    profile_json = default_profile_json(text_content)
+    profile_json = default_profile_json(
+        text_content,
+        display_name=display_name,
+        email=email,
+    )
     with connect() as conn:
         conn.execute(
             """
@@ -367,8 +397,14 @@ def create_resume(
     name: str,
     text_content: str,
     file_path: str | None = None,
+    display_name: str = "",
+    email: str = "",
 ) -> int:
-    profile_json = _default_profile_json(text_content)
+    profile_json = default_profile_json(
+        text_content,
+        display_name=display_name,
+        email=email,
+    )
     with connect() as conn:
         rid = _create_resume(
             conn,
@@ -497,6 +533,7 @@ def list_vacancies(
     resume_id: int,
     *,
     hide_applied: bool = False,
+    only_applied: bool = False,
     fit_min: int | None = None,
     date_filter: str | None = None,
     sort: str = "date_desc",
@@ -504,24 +541,32 @@ def list_vacancies(
     clauses = ["user_id = ?", "resume_id = ?"]
     params: list[Any] = [user_id, resume_id]
 
-    if hide_applied:
+    if only_applied:
+        clauses.append("applied = 1")
+    elif hide_applied:
         clauses.append("applied = 0")
     if fit_min is not None:
         clauses.append("fit_score >= ?")
         params.append(fit_min)
+
+    date_col = "applied_at" if only_applied else "first_seen"
     if date_filter == "today":
-        clauses.append("date(first_seen) = date('now', 'localtime')")
+        clauses.append(f"date({date_col}) = date('now', 'localtime')")
     elif date_filter == "yesterday":
-        clauses.append("date(first_seen) = date('now', 'localtime', '-1 day')")
+        clauses.append(f"date({date_col}) = date('now', 'localtime', '-1 day')")
     elif date_filter == "week":
-        clauses.append("date(first_seen) >= date('now', 'localtime', '-7 days')")
+        clauses.append(f"date({date_col}) >= date('now', 'localtime', '-7 days')")
 
     where = "WHERE " + " AND ".join(clauses)
+    if only_applied:
+        default_order = "applied_at DESC"
+    else:
+        default_order = "first_seen DESC"
     order = {
-        "date_desc": "first_seen DESC",
-        "date_asc": "first_seen ASC",
-        "fit_desc": "fit_score DESC, first_seen DESC",
-    }.get(sort, "first_seen DESC")
+        "date_desc": default_order,
+        "date_asc": f"{date_col} ASC",
+        "fit_desc": f"fit_score DESC, {default_order}",
+    }.get(sort, default_order)
 
     with connect() as conn:
         rows = conn.execute(
@@ -532,10 +577,14 @@ def list_vacancies(
 
 
 def mark_applied(vacancy_id: int, user_id: int) -> bool:
+    now = _now()
     with connect() as conn:
         cur = conn.execute(
-            "UPDATE vacancies SET applied = 1 WHERE id = ? AND user_id = ?",
-            (vacancy_id, user_id),
+            """
+            UPDATE vacancies SET applied = 1, applied_at = COALESCE(applied_at, ?)
+            WHERE id = ? AND user_id = ?
+            """,
+            (now, vacancy_id, user_id),
         )
         conn.commit()
         return cur.rowcount > 0
