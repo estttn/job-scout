@@ -82,6 +82,18 @@ def _migrate_vacancy_columns(conn: sqlite3.Connection) -> None:
     cols = _table_columns(conn, "vacancies")
     if "applied_at" not in cols:
         conn.execute("ALTER TABLE vacancies ADD COLUMN applied_at TEXT")
+    if "letter_status" not in cols:
+        conn.execute("ALTER TABLE vacancies ADD COLUMN letter_status TEXT NOT NULL DEFAULT 'ok'")
+    if "letter_error" not in cols:
+        conn.execute("ALTER TABLE vacancies ADD COLUMN letter_error TEXT")
+    if "last_letter_try_at" not in cols:
+        conn.execute("ALTER TABLE vacancies ADD COLUMN last_letter_try_at TEXT")
+    if "response_status" not in cols:
+        conn.execute("ALTER TABLE vacancies ADD COLUMN response_status TEXT")
+    if "response_at" not in cols:
+        conn.execute("ALTER TABLE vacancies ADD COLUMN response_at TEXT")
+    if "description" not in cols:
+        conn.execute("ALTER TABLE vacancies ADD COLUMN description TEXT NOT NULL DEFAULT ''")
 
 
 def _create_vacancies_table(conn: sqlite3.Connection) -> None:
@@ -99,7 +111,13 @@ def _create_vacancies_table(conn: sqlite3.Connection) -> None:
             fit TEXT NOT NULL,
             fit_score INTEGER NOT NULL DEFAULT 0,
             reason TEXT,
+            description TEXT NOT NULL DEFAULT '',
             cover_letter TEXT NOT NULL,
+            letter_status TEXT NOT NULL DEFAULT 'ok',
+            letter_error TEXT,
+            last_letter_try_at TEXT,
+            response_status TEXT,
+            response_at TEXT,
             applied INTEGER NOT NULL DEFAULT 0,
             first_seen TEXT NOT NULL,
             last_seen TEXT NOT NULL,
@@ -468,16 +486,25 @@ def upsert_vacancy(row: dict) -> bool:
     now = _now()
     fit = row["fit"]
     fit_score = row.get("fit_score", FIT_SCORE.get(fit, 65))
+    letter_status = row.get("letter_status", "ok")
+    letter_error = row.get("letter_error")
+    description = row.get("description") or ""
+    cover_letter = row.get("cover_letter", "")
     with connect() as conn:
         cur = conn.execute(
             """
-            SELECT id FROM vacancies
+            SELECT id, cover_letter, letter_status FROM vacancies
             WHERE hh_id = ? AND user_id = ? AND resume_id = ?
             """,
             (row["hh_id"], row["user_id"], row["resume_id"]),
         )
         exists = cur.fetchone()
         if exists:
+            existing_letter = (exists["cover_letter"] or "").strip()
+            if existing_letter and exists["letter_status"] == "ok":
+                cover_letter = exists["cover_letter"]
+                letter_status = "ok"
+                letter_error = None
             conn.execute(
                 """
                 UPDATE vacancies SET
@@ -486,7 +513,11 @@ def upsert_vacancy(row: dict) -> bool:
                     fit = ?,
                     fit_score = ?,
                     reason = COALESCE(?, reason),
-                    cover_letter = COALESCE(?, cover_letter)
+                    description = COALESCE(?, description),
+                    cover_letter = ?,
+                    letter_status = ?,
+                    letter_error = ?,
+                    last_letter_try_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -495,8 +526,12 @@ def upsert_vacancy(row: dict) -> bool:
                     fit,
                     fit_score,
                     row.get("reason"),
-                    row.get("cover_letter"),
-                    exists[0],
+                    description or None,
+                    cover_letter,
+                    letter_status,
+                    letter_error,
+                    _now(),
+                    exists["id"],
                 ),
             )
             conn.commit()
@@ -505,8 +540,9 @@ def upsert_vacancy(row: dict) -> bool:
             """
             INSERT INTO vacancies (
                 hh_id, user_id, resume_id, title, company, salary, url,
-                fit, fit_score, reason, cover_letter, applied, first_seen, last_seen
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                fit, fit_score, reason, description, cover_letter, letter_status,
+                letter_error, last_letter_try_at, applied, first_seen, last_seen
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             """,
             (
                 row["hh_id"],
@@ -519,13 +555,69 @@ def upsert_vacancy(row: dict) -> bool:
                 fit,
                 fit_score,
                 row.get("reason") or "",
-                row["cover_letter"],
+                description,
+                cover_letter,
+                letter_status,
+                letter_error,
+                _now(),
                 now,
                 now,
             ),
         )
         conn.commit()
         return True
+
+
+def list_pending_letters(user_id: int, resume_id: int) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, title, company, salary, url, description
+            FROM vacancies
+            WHERE user_id = ? AND resume_id = ?
+              AND applied = 0
+              AND letter_status = 'pending'
+            ORDER BY fit_score DESC, id ASC
+            """,
+            (user_id, resume_id),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_pending_letters(user_id: int, resume_id: int) -> int:
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM vacancies
+            WHERE user_id = ? AND resume_id = ?
+              AND applied = 0 AND letter_status = 'pending'
+            """,
+            (user_id, resume_id),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def update_vacancy_letter(
+    vacancy_id: int,
+    user_id: int,
+    *,
+    cover_letter: str,
+    letter_status: str,
+    letter_error: str | None = None,
+) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE vacancies SET
+                cover_letter = ?,
+                letter_status = ?,
+                letter_error = ?,
+                last_letter_try_at = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (cover_letter, letter_status, letter_error, _now(), vacancy_id, user_id),
+        )
+        conn.commit()
 
 
 def list_vacancies(
@@ -590,6 +682,23 @@ def mark_applied(vacancy_id: int, user_id: int) -> bool:
         return cur.rowcount > 0
 
 
+def set_vacancy_response(vacancy_id: int, user_id: int, response_status: str) -> bool:
+    if response_status not in ("invited", "rejected"):
+        return False
+    now = _now()
+    with connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE vacancies
+            SET response_status = ?, response_at = ?
+            WHERE id = ? AND user_id = ? AND applied = 1
+            """,
+            (response_status, now, vacancy_id, user_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def stats(user_id: int, resume_id: int) -> dict:
     with connect() as conn:
         total = conn.execute(
@@ -612,3 +721,12 @@ def stats(user_id: int, resume_id: int) -> dict:
             (user_id, resume_id),
         ).fetchone()[0]
     return {"total": total, "applied": applied, "new_today": new_today}
+
+
+def get_vacancy_for_user(vacancy_id: int, user_id: int) -> dict | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM vacancies WHERE id = ? AND user_id = ?",
+            (vacancy_id, user_id),
+        ).fetchone()
+    return dict(row) if row else None

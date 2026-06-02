@@ -5,10 +5,12 @@
   <aside class="sidebar">
     <div class="brand"><div class="brand-mark">FL</div> FitLetter</div>
     <nav class="nav">
-      <a href="/">Вакансии</a>
+      <a href="/?filter=pending">К отклику</a>
+      <a href="/?filter=applied">Отклики</a>
       <a href="/resumes">Резюме</a>
       <a href="/admin" class="active">Админ</a>
-      <form method="post" action="/logout"><button type="submit" class="linkish">Выйти</button></form>
+      <div class="nav-sep"></div>
+      <form class="logout-form" method="post" action="/logout"><button type="submit" class="linkish">Выйти</button></form>
     </nav>
     <div class="sidebar-foot">{{ user.display_name }}<br />администратор</div>
   </aside>

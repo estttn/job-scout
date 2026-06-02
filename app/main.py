@@ -12,25 +12,30 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.auth import user_session_payload, verify_password
-from app.collector import collect
+from app.collect_jobs import get_progress
+from app.collector import collect, fetch_vacancy_description
 from app.db import (
     RESUMES_DIR,
     create_resume,
     create_user,
     delete_resume,
     get_resume,
+    get_vacancy_for_user,
     get_user_by_username,
     init_db,
+    load_resume_profile,
     list_all_users,
     list_pending_users,
     list_resumes,
     list_vacancies,
     mark_applied,
+    set_vacancy_response,
     set_user_status,
     stats,
     update_resume_file,
 )
 from app.deps import get_session_user, require_admin, require_login
+from app.letters import generate_cover_letter
 from app.resume_parser import SUPPORTED_SUFFIXES, extract_text
 
 app = FastAPI(title="FitLetter")
@@ -76,6 +81,36 @@ def _selected_resume_id(request: Request, user_id: int, resume_id: int | None) -
     rid = resumes[0]["id"]
     request.session["resume_id"] = rid
     return rid
+
+
+def _ensure_resume_text(user: dict, resume_id: int) -> tuple[bool, str]:
+    """Backfill old resumes that have file_path but empty text_content."""
+    resume = get_resume(resume_id, user["id"])
+    if not resume:
+        return False, "Резюме не найдено"
+    if (resume.get("text_content") or "").strip():
+        return True, ""
+    file_path = (resume.get("file_path") or "").strip()
+    if not file_path:
+        return False, "В резюме нет текста — загрузите файл резюме, чтобы письма были персональными"
+    path = Path(file_path)
+    if not path.exists():
+        return False, "Файл резюме не найден — загрузите резюме повторно"
+    try:
+        text = extract_text(path)
+    except Exception:
+        return False, "Не удалось прочитать файл резюме — загрузите его повторно"
+    if not text.strip():
+        return False, "В файле резюме нет читаемого текста"
+    update_resume_file(
+        resume_id,
+        user["id"],
+        file_path=str(path),
+        text_content=text,
+        display_name=user.get("display_name") or "",
+        email=user.get("email") or "",
+    )
+    return True, ""
 
 
 @app.on_event("startup")
@@ -303,6 +338,8 @@ async def index(
     if rid is not None:
         fit_val = int(fit_min) if fit_min.isdigit() else None
         only_applied = filter == "applied"
+        if not only_applied:
+            sort = "fit_desc"
         vacancies = list_vacancies(
             user["id"],
             rid,
@@ -336,6 +373,20 @@ def _resume_query(request: Request, resume_id: int | None) -> str:
     return f"&resume_id={rid}" if rid else ""
 
 
+def _view_query(
+    *,
+    filter_name: str,
+    resume_id: int | None,
+    date_filter: str = "",
+) -> str:
+    parts = [f"filter={filter_name}"]
+    if resume_id:
+        parts.append(f"resume_id={resume_id}")
+    if date_filter:
+        parts.append(f"date_filter={date_filter}")
+    return "&".join(parts)
+
+
 @app.post("/apply/{vacancy_id}")
 async def apply(
     request: Request,
@@ -350,6 +401,97 @@ async def apply(
     return RedirectResponse(f"/?filter=pending{q}", status_code=303)
 
 
+@app.post("/regen/{vacancy_id}")
+async def regenerate_letter(
+    request: Request,
+    vacancy_id: int,
+    resume_id: int | None = Form(None),
+    filter_name: str = Form("pending"),
+    date_filter: str = Form(""),
+):
+    user = require_login(request)
+    if redir := _redirect_if_needed(user):
+        return redir
+
+    v = get_vacancy_for_user(vacancy_id, user["id"])
+    if not v:
+        q = _view_query(filter_name=filter_name, resume_id=resume_id, date_filter=date_filter)
+        return RedirectResponse(f"/?{q}&regen_error=not_found", status_code=303)
+
+    resume = get_resume(v["resume_id"], user["id"])
+    if not resume:
+        q = _view_query(filter_name=filter_name, resume_id=resume_id, date_filter=date_filter)
+        return RedirectResponse(f"/?{q}&regen_error=no_resume", status_code=303)
+
+    profile = load_resume_profile(resume)
+    desc = fetch_vacancy_description(v["url"])
+    try:
+        letter = generate_cover_letter(
+            title=v["title"],
+            company=v["company"] or "—",
+            salary=v["salary"] or "—",
+            description=desc,
+            profile=profile,
+        )
+        upsert_vacancy(
+            {
+                "hh_id": v["hh_id"],
+                "user_id": v["user_id"],
+                "resume_id": v["resume_id"],
+                "title": v["title"],
+                "company": v["company"],
+                "salary": v["salary"],
+                "url": v["url"],
+                "fit": v["fit"],
+                "fit_score": v["fit_score"],
+                "reason": v.get("reason") or "",
+                "cover_letter": letter,
+                "letter_status": "ok",
+                "letter_error": None,
+            }
+        )
+        q = _view_query(filter_name=filter_name, resume_id=resume_id, date_filter=date_filter)
+        return RedirectResponse(f"/?{q}&regen_ok=1", status_code=303)
+    except Exception as e:
+        upsert_vacancy(
+            {
+                "hh_id": v["hh_id"],
+                "user_id": v["user_id"],
+                "resume_id": v["resume_id"],
+                "title": v["title"],
+                "company": v["company"],
+                "salary": v["salary"],
+                "url": v["url"],
+                "fit": v["fit"],
+                "fit_score": v["fit_score"],
+                "reason": v.get("reason") or "",
+                "cover_letter": v.get("cover_letter") or "",
+                "letter_status": "failed",
+                "letter_error": str(e)[:500],
+            }
+        )
+        q = _view_query(filter_name=filter_name, resume_id=resume_id, date_filter=date_filter)
+        return RedirectResponse(f"/?{q}&regen_error=1", status_code=303)
+
+
+@app.post("/response/{vacancy_id}")
+async def set_response_status(
+    request: Request,
+    vacancy_id: int,
+    response_status: str = Form(...),
+    resume_id: int | None = Form(None),
+    date_filter: str = Form(""),
+):
+    user = require_login(request)
+    if redir := _redirect_if_needed(user):
+        return redir
+    ok = set_vacancy_response(vacancy_id, user["id"], response_status)
+    q = _view_query(filter_name="applied", resume_id=resume_id, date_filter=date_filter)
+    if ok:
+        return RedirectResponse(f"/?{q}&resp_ok=1", status_code=303)
+    return RedirectResponse(f"/?{q}&resp_error=1", status_code=303)
+
+
 @app.post("/api/collect")
 async def api_collect(request: Request):
     user = require_login(request)
@@ -358,9 +500,12 @@ async def api_collect(request: Request):
     rid = request.session.get("resume_id")
     if not rid:
         return JSONResponse({"ok": False, "error": "Сначала выберите или загрузите резюме"}, status_code=400)
+    ok, err = _ensure_resume_text(user, int(rid))
+    if not ok:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
     t0 = time.perf_counter()
     try:
-        result = await collect(user["id"], int(rid))
+        result = await collect(user["id"], int(rid), background_letters=True)
     except Exception as e:
         return JSONResponse(
             {"ok": False, "error": str(e), "elapsed_sec": round(time.perf_counter() - t0, 1)},
@@ -370,7 +515,21 @@ async def api_collect(request: Request):
         result = {"ok": True, "new": 0, "scanned": 0, "unique": 0}
     result["elapsed_sec"] = round(time.perf_counter() - t0, 1)
     result.setdefault("ok", True)
+    result.setdefault("phase", "listed")
     return JSONResponse(result)
+
+
+@app.get("/api/collect/progress")
+async def api_collect_progress(request: Request):
+    user = require_login(request)
+    if redir := _redirect_if_needed(user):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    rid = request.session.get("resume_id")
+    if not rid:
+        return JSONResponse({"ok": False, "error": "no resume"}, status_code=400)
+    progress = get_progress(user["id"], int(rid))
+    progress["ok"] = True
+    return JSONResponse(progress)
 
 
 @app.get("/health")

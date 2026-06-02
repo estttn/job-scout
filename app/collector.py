@@ -2,23 +2,30 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Callable
 from urllib.error import HTTPError, URLError
 
 from app.candidate import merge_profile_for_letters
+from app.collect_jobs import start_letter_job
 from app.db import (
     FIT_SCORE,
+    count_pending_letters,
     get_resume,
     get_user_by_id,
     init_db,
     list_active_users_with_resumes,
+    list_pending_letters,
     load_resume_profile,
+    update_vacancy_letter,
     upsert_vacancy,
 )
 from app.letters import generate_cover_letter
-from app.scraper import parse_search_html, parse_vacancy_description
+from app.scraper import VacancyItem, parse_search_html, parse_vacancy_description
 from app.scorer import score_vacancy
 
 HH_SEARCH = "https://hh.ru/search/vacancy"
@@ -31,6 +38,9 @@ BROWSER_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
 }
+
+DESC_WORKERS = max(1, int(os.getenv("COLLECT_DESC_WORKERS", "8")))
+LETTER_WORKERS = max(1, int(os.getenv("COLLECT_LETTER_WORKERS", "15")))
 
 
 def build_search_url(query: str, *, page: int, profile: dict) -> str:
@@ -74,7 +84,25 @@ def _profile_for_collect(user_id: int, resume_id: int, profile: dict) -> dict:
     )
 
 
-def collect_for_resume(user_id: int, resume_id: int, profile: dict) -> dict:
+def _fetch_descriptions_parallel(items: list[VacancyItem]) -> dict[str, str]:
+    if not items:
+        return {}
+    by_id = {it.id: it for it in items}
+    out: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=DESC_WORKERS) as pool:
+        futures = {pool.submit(fetch_vacancy_description, it.url): it.id for it in items}
+        for fut in as_completed(futures):
+            vid = futures[fut]
+            try:
+                out[vid] = fut.result()
+            except Exception as e:
+                print(f"Description worker failed {vid}: {e}")
+                out[vid] = ""
+    return out
+
+
+def scrape_for_resume(user_id: int, resume_id: int, profile: dict) -> dict:
+    """Phase 1: HH search + scoring, save vacancies with letter_status=pending."""
     profile = _profile_for_collect(user_id, resume_id, profile)
     seen_ids: set[str] = set()
     new_count = 0
@@ -82,8 +110,8 @@ def collect_for_resume(user_id: int, resume_id: int, profile: dict) -> dict:
     scanned = 0
     pages_per_query = profile.get("pages_per_query", 2)
     delay = profile.get("request_delay_sec", 0.8)
-    letter_delay = profile.get("letter_delay_sec", 0.5)
     queries = profile.get("search_queries") or []
+    need_description: dict[str, VacancyItem] = {}
 
     for query in queries:
         for page in range(pages_per_query):
@@ -112,49 +140,48 @@ def collect_for_resume(user_id: int, resume_id: int, profile: dict) -> dict:
                     if reason and reason.startswith("english"):
                         skipped_english += 1
                     continue
+                need_description[item.id] = item
 
-                description = fetch_vacancy_description(item.url)
-                time.sleep(delay)
+    desc_items = list(need_description.values())
+    descriptions = _fetch_descriptions_parallel(desc_items)
 
-                fit, reason = score_vacancy(
-                    title=item.title,
-                    company=item.company,
-                    salary=item.salary,
-                    description=description,
-                    profile=profile,
-                )
-                if fit == "no":
-                    if reason and reason.startswith("english"):
-                        skipped_english += 1
-                    continue
+    for item in desc_items:
+        description = descriptions.get(item.id, "")
+        fit, reason = score_vacancy(
+            title=item.title,
+            company=item.company,
+            salary=item.salary,
+            description=description,
+            profile=profile,
+        )
+        if fit == "no":
+            if reason and reason.startswith("english"):
+                skipped_english += 1
+            continue
 
-                fit_label = "yes" if fit == "yes" else "partial"
-                fit_score = FIT_SCORE.get(fit_label, 65)
-                letter = generate_cover_letter(
-                    title=item.title,
-                    company=item.company,
-                    salary=item.salary,
-                    description=description,
-                    profile=profile,
-                )
-                time.sleep(letter_delay)
-                if upsert_vacancy(
-                    {
-                        "hh_id": item.id,
-                        "user_id": user_id,
-                        "resume_id": resume_id,
-                        "title": item.title,
-                        "company": item.company,
-                        "salary": item.salary,
-                        "url": item.url,
-                        "fit": fit_label,
-                        "fit_score": fit_score,
-                        "reason": reason,
-                        "cover_letter": letter,
-                    }
-                ):
-                    new_count += 1
+        fit_label = "yes" if fit == "yes" else "partial"
+        fit_score = FIT_SCORE.get(fit_label, 65)
+        if upsert_vacancy(
+            {
+                "hh_id": item.id,
+                "user_id": user_id,
+                "resume_id": resume_id,
+                "title": item.title,
+                "company": item.company,
+                "salary": item.salary,
+                "url": item.url,
+                "fit": fit_label,
+                "fit_score": fit_score,
+                "reason": reason,
+                "description": description,
+                "cover_letter": "",
+                "letter_status": "pending",
+                "letter_error": None,
+            }
+        ):
+            new_count += 1
 
+    pending = count_pending_letters(user_id, resume_id)
     return {
         "user_id": user_id,
         "resume_id": resume_id,
@@ -162,7 +189,107 @@ def collect_for_resume(user_id: int, resume_id: int, profile: dict) -> dict:
         "new": new_count,
         "unique": len(seen_ids),
         "skipped_english": skipped_english,
+        "pending_letters": pending,
+        "phase": "listed",
     }
+
+
+def generate_letters_parallel(
+    user_id: int,
+    resume_id: int,
+    profile: dict,
+    progress_cb: Callable[[int, int, int], None] | None = None,
+) -> dict:
+    profile = _profile_for_collect(user_id, resume_id, profile)
+    pending = list_pending_letters(user_id, resume_id)
+    total = len(pending)
+    done = 0
+    failed = 0
+
+    if progress_cb:
+        progress_cb(0, total, 0)
+
+    def one(row: dict) -> bool:
+        desc = (row.get("description") or "").strip()
+        if not desc:
+            desc = fetch_vacancy_description(row["url"])
+        try:
+            letter = generate_cover_letter(
+                title=row["title"],
+                company=row["company"],
+                salary=row["salary"],
+                description=desc,
+                profile=profile,
+            )
+            update_vacancy_letter(
+                row["id"],
+                user_id,
+                cover_letter=letter,
+                letter_status="ok",
+            )
+            return True
+        except Exception as e:
+            update_vacancy_letter(
+                row["id"],
+                user_id,
+                cover_letter="",
+                letter_status="failed",
+                letter_error=str(e)[:500],
+            )
+            return False
+
+    if not pending:
+        return {"letters_done": 0, "letters_failed": 0, "letters_total": 0}
+
+    with ThreadPoolExecutor(max_workers=LETTER_WORKERS) as pool:
+        futures = [pool.submit(one, row) for row in pending]
+        for fut in as_completed(futures):
+            if fut.result():
+                done += 1
+            else:
+                failed += 1
+            if progress_cb:
+                progress_cb(done + failed, total, failed)
+
+    return {"letters_done": done, "letters_failed": failed, "letters_total": total}
+
+
+def collect_for_resume(
+    user_id: int,
+    resume_id: int,
+    profile: dict,
+    *,
+    background_letters: bool = True,
+) -> dict:
+    result = scrape_for_resume(user_id, resume_id, profile)
+    pending = result.get("pending_letters", 0)
+    if pending <= 0:
+        result["letters_started"] = False
+        return result
+
+    if background_letters:
+
+        def worker(progress_cb: Callable[[int, int, int], None]) -> dict:
+            agg = {"letters_done": 0, "letters_failed": 0, "letters_total": 0}
+            while count_pending_letters(user_id, resume_id) > 0:
+                stats = generate_letters_parallel(
+                    user_id, resume_id, profile, progress_cb=progress_cb
+                )
+                if stats["letters_total"] == 0:
+                    break
+                agg["letters_done"] += stats["letters_done"]
+                agg["letters_failed"] += stats["letters_failed"]
+                agg["letters_total"] += stats["letters_total"]
+            return agg
+
+        started = start_letter_job(user_id, resume_id, worker)
+        result["letters_started"] = started
+    else:
+        stats = generate_letters_parallel(user_id, resume_id, profile)
+        result.update(stats)
+        result["letters_started"] = False
+        result["phase"] = "done"
+    return result
 
 
 def collect_all_sync() -> list[dict]:
@@ -176,24 +303,43 @@ def collect_all_sync() -> list[dict]:
                 print(f"Skip collect: no queries uid={uid} rid={resume['id']}")
                 continue
             print(f"Collecting uid={uid} rid={resume['id']} resume={resume['name']!r}")
-            results.append(collect_for_resume(uid, resume["id"], profile))
+            results.append(
+                collect_for_resume(uid, resume["id"], profile, background_letters=False)
+            )
     return results
 
 
-def collect_sync_for_user(user_id: int, resume_id: int) -> dict:
+def collect_sync_for_user(
+    user_id: int,
+    resume_id: int,
+    *,
+    background_letters: bool = True,
+) -> dict:
     init_db()
     resume = get_resume(resume_id, user_id)
     if not resume:
         return {"ok": False, "error": "resume not found", "new": 0, "scanned": 0, "unique": 0}
     profile = load_resume_profile(resume)
-    result = collect_for_resume(user_id, resume_id, profile)
+    result = collect_for_resume(
+        user_id, resume_id, profile, background_letters=background_letters
+    )
     result["ok"] = True
     return result
 
 
-async def collect(user_id: int | None = None, resume_id: int | None = None) -> dict | list[dict]:
+async def collect(
+    user_id: int | None = None,
+    resume_id: int | None = None,
+    *,
+    background_letters: bool = True,
+) -> dict | list[dict]:
     if user_id is not None and resume_id is not None:
-        return await asyncio.to_thread(collect_sync_for_user, user_id, resume_id)
+        return await asyncio.to_thread(
+            collect_sync_for_user,
+            user_id,
+            resume_id,
+            background_letters=background_letters,
+        )
     return await asyncio.to_thread(collect_all_sync)
 
 
