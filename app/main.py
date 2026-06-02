@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -32,7 +33,9 @@ from app.deps import get_session_user, require_admin, require_login
 from app.resume_parser import SUPPORTED_SUFFIXES, extract_text
 
 app = FastAPI(title="FitLetter")
+STATIC_DIR = Path(__file__).parent / "static"
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 from app.auth import session_secret  # noqa: E402
 
