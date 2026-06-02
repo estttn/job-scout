@@ -23,6 +23,7 @@ def get_progress(user_id: int, resume_id: int) -> dict[str, Any]:
             "letters_done": 0,
             "letters_failed": 0,
             "letters_total": 0,
+            "letters_processed": 0,
         }
     return {
         "running": bool(job.get("running")),
@@ -30,6 +31,7 @@ def get_progress(user_id: int, resume_id: int) -> dict[str, Any]:
         "letters_done": int(job.get("letters_done", 0)),
         "letters_failed": int(job.get("letters_failed", 0)),
         "letters_total": int(job.get("letters_total", 0)),
+        "letters_processed": int(job.get("letters_processed", 0)),
         "error": job.get("error"),
     }
 
@@ -37,7 +39,7 @@ def get_progress(user_id: int, resume_id: int) -> dict[str, Any]:
 def start_letter_job(
     user_id: int,
     resume_id: int,
-    worker: Callable[[Callable[[int, int, int], None]], dict[str, Any]],
+    worker: Callable[[Callable[[int, int, int, int], None]], dict[str, Any]],
 ) -> bool:
     """Start background letter generation. Returns False if already running."""
     key = job_key(user_id, resume_id)
@@ -54,11 +56,12 @@ def start_letter_job(
             "error": None,
         }
 
-    def progress(done: int, total: int, failed: int) -> None:
+    def progress(processed: int, total: int, failed: int, succeeded: int) -> None:
         with _lock:
             j = _jobs.get(key)
             if j:
-                j["letters_done"] = done
+                j["letters_processed"] = processed
+                j["letters_done"] = succeeded
                 j["letters_total"] = total
                 j["letters_failed"] = failed
 

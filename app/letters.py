@@ -51,34 +51,56 @@ def _resolved_profile(profile: dict | None) -> dict:
 
 
 def is_bad_letter(text: str) -> bool:
+    """Template / spam phrases only (not «english» — too many false positives)."""
     lower = (text or "").lower()
-    if any(p.lower() in lower for p in BAD_PATTERNS):
-        return True
-    if _ENGLISH_SKILL_RE.search(lower):
-        return True
-    return False
+    return any(p.lower() in lower for p in BAD_PATTERNS)
 
 
-def is_complete_letter(text: str, profile: dict | None = None) -> bool:
+def _name_in_letter(text: str, name: str) -> bool:
+    if not name.strip():
+        return True
+    t = text.lower()
+    n = name.lower().strip()
+    if n in t:
+        return True
+    first = n.split()[0]
+    return len(first) >= 3 and first in t
+
+
+def _has_contacts_in_letter(text: str, profile: dict) -> bool:
+    p = _resolved_profile(profile)
+    block = (p.get("contacts_block") or "").strip()
+    if block and block in text:
+        return True
+    contacts = p.get("contacts") or {}
+    for key in ("phone", "email", "telegram"):
+        val = (contacts.get(key) or "").strip()
+        if val and val in text:
+            return True
+    return bool(block or contacts.get("phone") or contacts.get("email"))
+
+
+def _why_incomplete(text: str, profile: dict, *, strict: bool) -> str:
+    t = (text or "").strip()
+    if not t:
+        return "пустой ответ модели"
+    min_len = 200 if strict else 140
+    if len(t) < min_len:
+        return f"слишком короткое ({len(t)} симв.)"
+    if is_bad_letter(t):
+        return "шаблонная фраза"
+    name = (_resolved_profile(profile).get("candidate_name") or "").strip()
+    if strict and name and not _name_in_letter(t, name):
+        return f"нет имени «{name.split()[0]}» в тексте"
+    if not _has_contacts_in_letter(t, profile):
+        return "нет блока контактов"
+    return "не прошло проверку качества"
+
+
+def is_complete_letter(text: str, profile: dict | None = None, *, strict: bool = True) -> bool:
     p = _resolved_profile(profile)
     t = (text or "").strip()
-    if len(t) < 220:
-        return False
-    if is_bad_letter(t):
-        return False
-    name = (p.get("candidate_name") or "").strip()
-    if name and name not in t:
-        return False
-    contacts = p.get("contacts") or {}
-    has_contact = bool(
-        p.get("contacts_block")
-        or contacts.get("phone")
-        or contacts.get("email")
-        or contacts.get("telegram")
-    )
-    if not has_contact:
-        return False
-    return True
+    return not _why_incomplete(t, p, strict=strict)
 
 
 def _clean_description(description: str, company: str) -> str:
@@ -165,22 +187,35 @@ def generate_cover_letter(
 
     desc = _clean_description(description, company)
     last_err: Exception | None = None
-    for attempt in range(3):
+    last_letter = ""
+    incomplete_reason = ""
+    for attempt in range(4):
+        strict = attempt < 3
         try:
             letter = _deepseek_letter(title, company, salary, desc, p)
-            if letter and is_complete_letter(letter, p):
+            last_letter = letter or ""
+            if letter and is_complete_letter(letter, p, strict=strict):
                 return letter
+            incomplete_reason = _why_incomplete(letter or "", p, strict=strict)
             print(
-                f"Incomplete letter attempt {attempt + 1} [{title[:40]}]: len={len(letter or '')}",
+                f"Incomplete letter attempt {attempt + 1} [{title[:40]}]: {incomplete_reason}",
                 flush=True,
             )
         except Exception as e:
             last_err = e
+            incomplete_reason = str(e)[:200]
             print(f"DeepSeek attempt {attempt + 1} [{title[:40]}]: {e}")
             time.sleep(2 * (attempt + 1))
+
+    if last_letter and is_complete_letter(last_letter, p, strict=False):
+        return last_letter
+    if last_letter and len(last_letter) >= 140 and _has_contacts_in_letter(last_letter, p):
+        return last_letter
+
     if last_err:
-        print(f"DeepSeek failed [{title[:40]}]: {last_err}")
-    raise RuntimeError(f"Не удалось сгенерировать письмо для «{title}»")
+        raise RuntimeError(str(last_err)[:500]) from last_err
+    detail = incomplete_reason or "неизвестная причина"
+    raise RuntimeError(f"Не удалось сгенерировать письмо для «{title}»: {detail}")
 
 
 def _api_key() -> str:

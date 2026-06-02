@@ -593,6 +593,21 @@ def upsert_vacancy(row: dict) -> bool:
         return True
 
 
+def list_failed_letters(user_id: int, resume_id: int) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, title, company, salary, url, description
+            FROM vacancies
+            WHERE user_id = ? AND resume_id = ?
+              AND applied = 0 AND letter_status = 'failed'
+            ORDER BY fit_score DESC, id ASC
+            """,
+            (user_id, resume_id),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def list_pending_letters(user_id: int, resume_id: int) -> list[dict]:
     with connect() as conn:
         rows = conn.execute(
@@ -607,6 +622,19 @@ def list_pending_letters(user_id: int, resume_id: int) -> list[dict]:
             (user_id, resume_id),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def count_failed_letters(user_id: int, resume_id: int) -> int:
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM vacancies
+            WHERE user_id = ? AND resume_id = ?
+              AND applied = 0 AND letter_status = 'failed'
+            """,
+            (user_id, resume_id),
+        ).fetchone()
+    return int(row[0]) if row else 0
 
 
 def count_pending_letters(user_id: int, resume_id: int) -> int:

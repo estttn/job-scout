@@ -366,10 +366,9 @@
       lettersBox.innerHTML = '';
       return;
     }
-    var done = (d.letters_done || 0) + (d.letters_failed || 0);
     var total = d.letters_total || 0;
     var line = d.running
-      ? '<strong>Письма:</strong> ' + done + ' / ' + total + '…'
+      ? '<strong>Письма:</strong> ' + (d.letters_processed || 0) + ' / ' + total + '…'
       : '<strong>Письма готовы:</strong> ' + (d.letters_done || 0) + ' из ' + total +
         (d.letters_failed ? ' · ошибок: ' + d.letters_failed : '');
     lettersBox.innerHTML = '<div class="letters-progress">' + line + '</div>';

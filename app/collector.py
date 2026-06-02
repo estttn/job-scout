@@ -15,7 +15,9 @@ from app.candidate import merge_profile_for_letters
 from app.collect_jobs import start_letter_job
 from app.db import (
     FIT_SCORE,
+    count_failed_letters,
     count_pending_letters,
+    list_failed_letters,
     get_resume,
     get_user_by_id,
     init_db,
@@ -41,7 +43,7 @@ BROWSER_HEADERS = {
 }
 
 DESC_WORKERS = max(1, int(os.getenv("COLLECT_DESC_WORKERS", "8")))
-LETTER_WORKERS = max(1, min(12, int(os.getenv("COLLECT_LETTER_WORKERS", "6"))))
+LETTER_WORKERS = max(1, min(8, int(os.getenv("COLLECT_LETTER_WORKERS", "4"))))
 
 
 def build_search_url(query: str, *, page: int, profile: dict) -> str:
@@ -208,7 +210,7 @@ def generate_letters_parallel(
     failed = 0
 
     if progress_cb:
-        progress_cb(0, total, 0)
+        progress_cb(0, total, 0, 0)
 
     def one(row: dict) -> bool:
         time.sleep(random.uniform(0.05, 0.35))
@@ -251,10 +253,62 @@ def generate_letters_parallel(
             else:
                 failed += 1
             if progress_cb and (done + failed) % 3 == 0:
-                progress_cb(done + failed, total, failed)
+                progress_cb(done + failed, total, failed, done)
 
     if progress_cb:
-        progress_cb(done + failed, total, failed)
+        progress_cb(done + failed, total, failed, done)
+
+    return {"letters_done": done, "letters_failed": failed, "letters_total": total}
+
+
+def retry_failed_letters_parallel(
+    user_id: int,
+    resume_id: int,
+    profile: dict,
+) -> dict:
+    """Second pass for vacancies that failed letter generation."""
+    profile = _profile_for_collect(user_id, resume_id, profile)
+    pending = list_failed_letters(user_id, resume_id)
+    if not pending:
+        return {"letters_done": 0, "letters_failed": 0, "letters_total": 0}
+
+    total = len(pending)
+    done = 0
+    failed = 0
+    time.sleep(1.0)
+
+    def one(row: dict) -> bool:
+        time.sleep(random.uniform(0.2, 0.6))
+        desc = (row.get("description") or "").strip() or fetch_vacancy_description(row["url"])
+        try:
+            letter = generate_cover_letter(
+                title=row["title"],
+                company=row["company"],
+                salary=row["salary"],
+                description=desc,
+                profile=profile,
+            )
+            update_vacancy_letter(
+                row["id"], user_id, cover_letter=letter, letter_status="ok", letter_error=None
+            )
+            return True
+        except Exception as e:
+            update_vacancy_letter(
+                row["id"],
+                user_id,
+                cover_letter="",
+                letter_status="failed",
+                letter_error=str(e)[:500],
+            )
+            return False
+
+    with ThreadPoolExecutor(max_workers=max(1, LETTER_WORKERS // 2)) as pool:
+        futures = [pool.submit(one, row) for row in pending]
+        for fut in as_completed(futures):
+            if fut.result():
+                done += 1
+            else:
+                failed += 1
 
     return {"letters_done": done, "letters_failed": failed, "letters_total": total}
 
@@ -274,7 +328,7 @@ def collect_for_resume(
 
     if background_letters:
 
-        def worker(progress_cb: Callable[[int, int, int], None]) -> dict:
+        def worker(progress_cb: Callable[[int, int, int, int], None]) -> dict:
             agg = {"letters_done": 0, "letters_failed": 0, "letters_total": 0}
             while count_pending_letters(user_id, resume_id) > 0:
                 stats = generate_letters_parallel(
@@ -285,6 +339,9 @@ def collect_for_resume(
                 agg["letters_done"] += stats["letters_done"]
                 agg["letters_failed"] += stats["letters_failed"]
                 agg["letters_total"] += stats["letters_total"]
+            retry = retry_failed_letters_parallel(user_id, resume_id, profile)
+            agg["letters_done"] += retry["letters_done"]
+            agg["letters_failed"] = count_failed_letters(user_id, resume_id)
             return agg
 
         started = start_letter_job(user_id, resume_id, worker)
